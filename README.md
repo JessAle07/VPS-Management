@@ -117,6 +117,12 @@ Copiar código
 
 ---
 
+## Changelog
+### v1.1
+- Added calendar and time picker for last payment
+- Improved banned account workflow
+Note: Before updating, make sure to save your last payment dates so you dont lose them once the update is applied. To update you just need to download the new app,py, as the database will remain the same.
+
 ## 🧹 OPCIONAL: `.gitignore` (muy recomendado)
 
 Crea un archivo `.gitignore` y pon esto:
@@ -129,8 +135,4 @@ __pycache__/
 .venv
 venv/
 
-## Changelog
-### v1.1
-- Added calendar and time picker for last payment
-- Improved banned account workflow
-Note: Before updating, make sure to save your last payment dates so you dont lose them once the update is applied. To update you just need to download the new app,py, as the database will remain the same.
+
