@@ -1,6 +1,7 @@
 import streamlit as st
-from sqlalchemy import create_engine, Column, Integer, String, ForeignKey
+from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, text
 from sqlalchemy.orm import declarative_base, sessionmaker
+from datetime import datetime, time
 
 # --------------------
 # DATABASE
@@ -32,7 +33,6 @@ class AccountInfo(Base):
     ip_login = Column(String)
     status = Column(String, default="active")
     last_payment = Column(String)
-
     account_id = Column(Integer, ForeignKey("accounts.id"), unique=True)
     paypal_id = Column(Integer, ForeignKey("paypal.id"), nullable=True)
 
@@ -42,207 +42,271 @@ class Proxy(Base):
     proxy = Column(String)
     account_id = Column(Integer, ForeignKey("accounts.id"))
 
+# 🔥 Payout actualizado
+class Payout(Base):
+    __tablename__ = "payouts"
+    id = Column(Integer, primary_key=True)
+    amount = Column(String)
+    method = Column(String)
+    datetime = Column(String)
+    received = Column(Integer, default=0)  # 🔥 NUEVO
+    account_id = Column(Integer, ForeignKey("accounts.id"))
+
 Base.metadata.create_all(engine)
 
-# --------------------
-# UI
-# --------------------
+# 🔥 Si la columna no existe (DB vieja), la agrega sin borrar nada
+with engine.connect() as conn:
+    try:
+        conn.execute(text("ALTER TABLE payouts ADD COLUMN received INTEGER DEFAULT 0"))
+    except:
+        pass
+
 st.set_page_config(page_title="VPS Manager", layout="wide")
 st.title("VPS → Accounts → Proxies")
 
 session = SessionLocal()
 
-# --------------------
-# VPS
-# --------------------
-st.subheader("VPS")
-vps_name = st.text_input("Create VPS")
-if st.button("Add VPS"):
-    if vps_name.strip():
-        session.add(VPS(name=vps_name.strip()))
-        session.commit()
-        st.rerun()
+# 🔥 TABS NUEVAS
+tab1, tab2 = st.tabs(["Main Manager", "📊 Global Payouts"])
 
-vps_list = session.query(VPS).all()
-if not vps_list:
-    st.stop()
+# ============================================================
+# ======================== TAB 1 =============================
+# ============================================================
+with tab1:
 
-vps = st.selectbox("Select VPS", vps_list, format_func=lambda v: v.name)
+    st.subheader("VPS")
 
-# --------------------
-# ADD ACCOUNT
-# --------------------
-st.subheader("Accounts")
-account_name = st.text_input("Create Account")
-if st.button("Add Account"):
-    if account_name.strip():
-        acc = Account(name=account_name.strip(), vps_id=vps.id)
-        session.add(acc)
-        session.commit()
-        session.add(AccountInfo(account_id=acc.id, status="active"))
-        session.commit()
-        st.rerun()
+    new_vps = st.text_input("Create VPS")
+    if st.button("Add VPS"):
+        if new_vps.strip():
+            if not session.query(VPS).filter_by(name=new_vps.strip()).first():
+                session.add(VPS(name=new_vps.strip()))
+                session.commit()
+                st.rerun()
+            else:
+                st.error("VPS already exists")
 
-accounts = session.query(Account).filter_by(vps_id=vps.id).all()
+    vps_list = session.query(VPS).order_by(VPS.id).all()
+    if not vps_list:
+        st.stop()
 
-# --------------------
-# PAYPALS
-# --------------------
-st.subheader("PayPal Profiles")
-paypal_email = st.text_input("Add PayPal")
-if st.button("Add PayPal"):
-    if paypal_email.strip():
-        session.add(PayPal(email=paypal_email.strip()))
-        session.commit()
-        st.rerun()
+    vps_names = [v.name for v in vps_list]
 
-paypals = session.query(PayPal).all()
+    if "selected_vps" not in st.session_state:
+        st.session_state.selected_vps = vps_names[0]
 
-# --------------------
-# SPLIT ACTIVE / BANNED
-# --------------------
-active_accounts = []
-banned_accounts = []
+    if st.session_state.selected_vps not in vps_names:
+        st.session_state.selected_vps = vps_names[0]
 
-for acc in accounts:
-    info = session.query(AccountInfo).filter_by(account_id=acc.id).first()
-    if not info:
-        info = AccountInfo(account_id=acc.id, status="active")
-        session.add(info)
-        session.commit()
+    selected_name = st.selectbox(
+        "Select VPS",
+        vps_names,
+        index=vps_names.index(st.session_state.selected_vps)
+    )
 
-    if info.status == "banned":
-        banned_accounts.append(acc)
-    else:
-        active_accounts.append(acc)
+    st.session_state.selected_vps = selected_name
+    vps = session.query(VPS).filter_by(name=selected_name).first()
 
-# --------------------
-# ACTIVE ACCOUNTS
-# --------------------
-for acc in active_accounts:
-    info = session.query(AccountInfo).filter_by(account_id=acc.id).first()
+    rename_vps = st.text_input("Rename VPS", value=vps.name)
+    if st.button("Update VPS Name"):
+        if rename_vps.strip() and rename_vps != vps.name:
+            if not session.query(VPS).filter_by(name=rename_vps.strip()).first():
+                vps.name = rename_vps.strip()
+                session.commit()
+                st.session_state.selected_vps = rename_vps.strip()
+                st.rerun()
+            else:
+                st.error("Name already exists")
 
-    with st.expander(acc.name, expanded=False):
+    st.warning("⚠️ Delete VPS")
+    if st.checkbox(f"I understand, delete VPS '{vps.name}'"):
+        if st.button("🗑️ DELETE VPS", type="primary"):
+            accounts_to_delete = session.query(Account).filter_by(vps_id=vps.id).all()
+            for acc in accounts_to_delete:
+                session.query(Proxy).filter_by(account_id=acc.id).delete()
+                session.query(AccountInfo).filter_by(account_id=acc.id).delete()
+                session.query(Payout).filter_by(account_id=acc.id).delete()
+                session.delete(acc)
+            session.delete(vps)
+            session.commit()
+            st.session_state.selected_vps = None
+            st.rerun()
 
-        st.warning("⚠️ Danger zone")
+    # =========================
+    # ACCOUNTS
+    # =========================
+    st.subheader("Accounts")
 
-        col1, col2 = st.columns(2)
+    new_account = st.text_input("Create Account")
+    if st.button("Add Account"):
+        if new_account.strip():
+            acc = Account(name=new_account.strip(), vps_id=vps.id)
+            session.add(acc)
+            session.commit()
+            session.add(AccountInfo(account_id=acc.id))
+            session.commit()
+            st.rerun()
 
-        confirm_ban = col1.checkbox(
-            f"I understand, mark '{acc.name}' as BANNED",
-            key=f"confirm_ban_{acc.id}"
-        )
+    accounts = session.query(Account).filter_by(vps_id=vps.id).all()
+    paypals = session.query(PayPal).all()
 
-        if confirm_ban:
-            if col1.button("🚫 MARK AS BANNED", key=f"ban_{acc.id}"):
+    active_accounts = []
+    banned_accounts = []
+
+    for acc in accounts:
+        info = session.query(AccountInfo).filter_by(account_id=acc.id).first()
+        if info and info.status == "banned":
+            banned_accounts.append(acc)
+        else:
+            active_accounts.append(acc)
+
+    # =========================
+    # ACTIVE ACCOUNTS
+    # =========================
+    for acc in active_accounts:
+        info = session.query(AccountInfo).filter_by(account_id=acc.id).first()
+
+        with st.expander(acc.name):
+
+            col1, col2 = st.columns(2)
+
+            if col1.button("🚫 Ban", key=f"ban_{acc.id}"):
                 info.status = "banned"
                 session.commit()
                 st.rerun()
 
-        confirm_delete = col2.checkbox(
-            f"I understand, delete '{acc.name}'",
-            key=f"confirm_del_{acc.id}"
-        )
-
-        if confirm_delete:
-            if col2.button("🗑️ DELETE ACCOUNT", key=f"delete_{acc.id}", type="primary"):
+            if col2.button("🗑️ Delete", key=f"del_acc_{acc.id}"):
                 session.query(Proxy).filter_by(account_id=acc.id).delete()
-                session.query(AccountInfo).filter_by(account_id=acc.id).delete()
+                session.query(Payout).filter_by(account_id=acc.id).delete()
+                session.delete(info)
                 session.delete(acc)
                 session.commit()
                 st.rerun()
 
-        st.markdown("### Account Info")
+            info.gmail = st.text_input("Gmail", info.gmail or "", key=f"gmail_{acc.id}")
+            info.ip_login = st.text_input("Login IP", info.ip_login or "", key=f"ip_{acc.id}")
 
-        info.gmail = st.text_input("Gmail", info.gmail or "", key=f"gmail_{acc.id}")
-        info.ip_login = st.text_input("Login IP", info.ip_login or "", key=f"ip_{acc.id}")
-        info.last_payment = st.text_input("Last Payment", info.last_payment or "", key=f"pay_{acc.id}")
+            st.markdown("### 💰 Register Payout")
 
-        info.status = st.selectbox(
-            "Estado en Earn",
-            ["active", "inactive", "paused"],
-            index=["active", "inactive", "paused"].index(info.status or "active"),
-            key=f"status_{acc.id}"
-        )
+            dcol, tcol = st.columns(2)
+            date_val = dcol.date_input("Date", key=f"d_{acc.id}")
+            time_val = tcol.time_input("Time", value=time(12,0), key=f"t_{acc.id}")
 
-        paypal_choice = st.selectbox(
-            "PayPal",
-            ["None"] + [p.email for p in paypals],
-            index=0 if not info.paypal_id else
-            [p.id for p in paypals].index(info.paypal_id) + 1,
-            key=f"paypal_{acc.id}"
-        )
+            col_amount, col_method = st.columns(2)
+            amount_input = col_amount.text_input("Amount ($)", key=f"amount_{acc.id}")
+            method_input = col_method.selectbox(
+                "Payment Method",
+                ["Amazon Gift Card", "PayPal"],
+                key=f"method_{acc.id}"
+            )
 
-        info.paypal_id = None if paypal_choice == "None" else \
-            session.query(PayPal).filter_by(email=paypal_choice).first().id
+            if st.button("Save Payout", key=f"save_payout_{acc.id}"):
+                if date_val and time_val and amount_input:
+                    combined = datetime.combine(date_val, time_val)
+                    session.add(
+                        Payout(
+                            amount=amount_input,
+                            method=method_input,
+                            datetime=combined.strftime("%d-%m-%Y %H:%M"),
+                            account_id=acc.id,
+                            received=0
+                        )
+                    )
+                    session.commit()
+                    st.success("Payout saved.")
+                    st.rerun()
 
-        session.commit()
+            payouts = session.query(Payout).filter_by(account_id=acc.id).order_by(Payout.id.desc()).all()
+            for p in payouts:
+                status_icon = "✅" if p.received else "❌"
+                st.write(f"{p.datetime} — ${p.amount} — {p.method} — {status_icon}")
 
-        st.divider()
-        st.markdown("### Proxies")
+            session.commit()
 
-        proxies = session.query(Proxy).filter_by(account_id=acc.id).all()
+    st.divider()
+    st.subheader("PayPal Management")
 
-        for p in proxies:
-            c1, c2 = st.columns([6, 1])
-            c1.write(p.proxy)
-            if c2.button("❌", key=f"del_proxy_{p.id}"):
-                session.delete(p)
+    new_pp = st.text_input("New PayPal")
+    if st.button("Add PayPal Account"):
+        if new_pp.strip():
+            if not session.query(PayPal).filter_by(email=new_pp.strip()).first():
+                session.add(PayPal(email=new_pp.strip()))
+                session.commit()
+                st.rerun()
+            else:
+                st.error("Already exists")
+
+# ============================================================
+# ======================== TAB 2 =============================
+# ============================================================
+with tab2:
+
+    st.subheader("📊 Global Payout Overview")
+
+    payouts = session.query(Payout).order_by(Payout.id.desc()).all()
+
+    total_pending = 0
+    total_received = 0
+
+    for p in payouts:
+        try:
+            value = float(p.amount)
+        except:
+            value = 0
+
+        if p.received:
+            total_received += value
+        else:
+            total_pending += value
+
+    colA, colB = st.columns(2)
+    colA.metric("💰 Total Pending", f"${total_pending:.2f}")
+    colB.metric("✅ Total Received", f"${total_received:.2f}")
+
+    st.divider()
+
+    # 🔥 Encabezados tipo tabla
+    h1, h2, h3, h4, h5, h6 = st.columns([2, 2, 1, 2, 1, 1])
+    h1.markdown("**Date**")
+    h2.markdown("**Account**")
+    h3.markdown("**$**")
+    h4.markdown("**Method**")
+    h5.markdown("**Status**")
+    h6.markdown("**Action**")
+
+    st.markdown("---")
+
+    for p in payouts:
+
+        account = session.query(Account).get(p.account_id)
+
+        c1, c2, c3, c4, c5, c6 = st.columns([2, 2, 1, 2, 1, 1])
+
+        c1.write(p.datetime)
+        c2.write(account.name if account else "Unknown")
+        c3.write(f"${p.amount}")
+        c4.write(p.method)
+
+        if p.received:
+            c5.markdown("✅ Received")
+            if c6.button("↩ Undo", key=f"undo_{p.id}"):
+                p.received = 0
+                session.commit()
+                st.rerun()
+        else:
+            c5.markdown("❌ Pending")
+            if c6.button("Confirm", key=f"conf_{p.id}"):
+                p.received = 1
                 session.commit()
                 st.rerun()
 
-        new_proxies = st.text_area(
-            "Add proxies (one per line)",
-            key=f"new_proxy_{acc.id}",
-            height=150
-        )
-
-        if st.button("Add Proxies", key=f"add_proxy_{acc.id}"):
-            for line in new_proxies.splitlines():
-                if line.strip():
-                    session.add(Proxy(proxy=line.strip(), account_id=acc.id))
+        # Delete debajo pero alineado
+        c_del = st.columns([2,2,1,2,1,1])[5]
+        if c_del.button("🗑", key=f"del_global_{p.id}"):
+            session.delete(p)
             session.commit()
             st.rerun()
 
-# --------------------
-# BANNED ACCOUNTS
-# --------------------
-st.divider()
-st.subheader("🚫 Banned Accounts (IP reference)")
-
-for acc in banned_accounts:
-    with st.expander(f"🚫 {acc.name}", expanded=False):
-
-        proxies = session.query(Proxy).filter_by(account_id=acc.id).all()
-
-        if proxies:
-            for p in proxies:
-                st.write(p.proxy)
-        else:
-            st.info("No proxies stored")
-
-        st.divider()
-
-        confirm_delete = st.checkbox(
-            f"Permanently delete '{acc.name}'",
-            key=f"confirm_del_banned_{acc.id}"
-        )
-
-        if confirm_delete:
-            if st.button("🗑️ DELETE PERMANENTLY", key=f"delete_banned_{acc.id}"):
-                session.query(Proxy).filter_by(account_id=acc.id).delete()
-                session.query(AccountInfo).filter_by(account_id=acc.id).delete()
-                session.delete(acc)
-                session.commit()
-                st.rerun()
-
+        st.markdown("---")
+        
 session.close()
-
-
-
-
-
-
-
-
-
