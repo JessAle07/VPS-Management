@@ -221,8 +221,64 @@ with tab1:
                 status_icon = "✅" if p.received else "❌"
                 st.write(f"{p.datetime} — ${p.amount} — {p.method} — {status_icon}")
 
+            # 🔹 RESTAURAR STATUS
+            info.status = st.selectbox(
+                "Status",
+                ["active", "inactive", "paused"],
+                index=["active","inactive","paused"].index(info.status or "active"),
+                key=f"status_{acc.id}"
+            )
+
+            # 🔹 RESTAURAR PAYPAL
+            paypal_options = ["None"] + [p.email for p in paypals]
+
+            current_index = 0
+            if info.paypal_id:
+                current_pp = session.query(PayPal).get(info.paypal_id)
+                if current_pp and current_pp.email in paypal_options:
+                    current_index = paypal_options.index(current_pp.email)
+
+            selected_paypal = st.selectbox(
+                "PayPal",
+                paypal_options,
+                index=current_index,
+                key=f"paypal_{acc.id}"
+            )
+
+            if selected_paypal == "None":
+                info.paypal_id = None
+            else:
+                info.paypal_id = session.query(PayPal).filter_by(email=selected_paypal).first().id
+
             session.commit()
 
+            # =========================
+            # 🌐 PROXIES COLAPSABLES
+            # =========================
+            proxies = session.query(Proxy).filter_by(account_id=acc.id).all()
+            proxy_count = len(proxies)
+
+            with st.expander(f"🌐 Proxies ({proxy_count})"):
+
+                if proxy_count == 0:
+                    st.info("No proxies assigned.")
+                else:
+                    for p in proxies:
+                        col1, col2 = st.columns([6,1])
+                        col1.write(p.proxy)
+                        if col2.button("❌", key=f"proxy_{p.id}"):
+                            session.delete(p)
+                            session.commit()
+                            st.rerun()
+
+                new_proxies = st.text_area("Add proxies (one per line)", key=f"np_{acc.id}")
+
+                if st.button("Add Proxies", key=f"addp_{acc.id}"):
+                    for line in new_proxies.splitlines():
+                        if line.strip():
+                            session.add(Proxy(proxy=line.strip(), account_id=acc.id))
+                    session.commit()
+                    st.rerun()
     st.divider()
     st.subheader("PayPal Management")
 
@@ -235,7 +291,27 @@ with tab1:
                 st.rerun()
             else:
                 st.error("Already exists")
+    st.divider()
+    st.subheader("🚫 Banned Accounts")
 
+    for acc in banned_accounts:
+        with st.expander(acc.name):
+
+            info = session.query(AccountInfo).filter_by(account_id=acc.id).first()
+
+            st.write(f"Gmail: {info.gmail or '-'}")
+            st.write(f"Login IP: {info.ip_login or '-'}")
+
+            proxies = session.query(Proxy).filter_by(account_id=acc.id).all()
+
+            st.markdown("**Proxies:**")
+            for p in proxies:
+                st.write(p.proxy)
+
+            if st.button("♻️ Unban", key=f"unban_{acc.id}"):
+                info.status = "active"
+                session.commit()
+                st.rerun()
 # ============================================================
 # ======================== TAB 2 =============================
 # ============================================================
