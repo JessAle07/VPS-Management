@@ -67,7 +67,7 @@ st.title("VPS → Accounts → Proxies")
 session = SessionLocal()
 
 # 🔥 TABS NUEVAS
-tab1, tab2 = st.tabs(["Main Manager", "📊 Global Payouts"])
+tab1, tab2, tab3 = st.tabs(["Main Manager", "📊 Global Payouts", "📅 Monthly Stats"])
 
 # ============================================================
 # ======================== TAB 1 =============================
@@ -323,6 +323,7 @@ with tab2:
 
     total_pending = 0
     total_received = 0
+    total_banned = 0
 
     for p in payouts:
         try:
@@ -330,59 +331,171 @@ with tab2:
         except:
             value = 0
 
-        if p.received:
+        if p.received == 1:
             total_received += value
+        elif p.received == 2:
+            total_banned += value
         else:
             total_pending += value
 
-    colA, colB = st.columns(2)
-    colA.metric("💰 Total Pending", f"${total_pending:.2f}")
-    colB.metric("✅ Total Received", f"${total_received:.2f}")
+    colA, colB, colC = st.columns(3)
+
+    colA.metric("💰 Pending", f"${total_pending:.2f}")
+    colB.metric("✅ Received", f"${total_received:.2f}")
+    colC.metric("🚫 Lost (Banned)", f"${total_banned:.2f}")
 
     st.divider()
 
+    # 🔥 ORDENAR payouts: Pending → Received → Banned
+    payouts_sorted = sorted(
+        payouts,
+        key=lambda p: (
+            0 if p.received == 0 else
+            1 if p.received == 1 else
+            2
+        )
+    )
+
     # 🔥 Encabezados tipo tabla
-    h1, h2, h3, h4, h5, h6 = st.columns([2, 2, 1, 2, 1, 1])
+    h1, h2, h3, h4, h5, h6 = st.columns([2,2,1,2,1,2])
+
     h1.markdown("**Date**")
     h2.markdown("**Account**")
     h3.markdown("**$**")
     h4.markdown("**Method**")
     h5.markdown("**Status**")
-    h6.markdown("**Action**")
+    h6.markdown("**Actions**")
 
     st.markdown("---")
 
-    for p in payouts:
+    for p in payouts_sorted:
 
         account = session.query(Account).get(p.account_id)
 
-        c1, c2, c3, c4, c5, c6 = st.columns([2, 2, 1, 2, 1, 1])
+        c1, c2, c3, c4, c5, c6 = st.columns([2,2,1,2,1,2])
 
         c1.write(p.datetime)
         c2.write(account.name if account else "Unknown")
         c3.write(f"${p.amount}")
         c4.write(p.method)
 
-        if p.received:
+        # =====================
+        # STATUS LOGIC
+        # =====================
+
+        if p.received == 1:
+
             c5.markdown("✅ Received")
-            if c6.button("↩ Undo", key=f"undo_{p.id}"):
+
+            if c6.button("↩ Undo", key=f"undo_payout_{p.id}"):
                 p.received = 0
                 session.commit()
                 st.rerun()
+
+        elif p.received == 2:
+
+            c5.markdown("🚫 Banned")
+
+            if c6.button("↩ Undo Ban", key=f"unban_payout_{p.id}"):
+                p.received = 0
+                session.commit()
+                st.rerun()
+
         else:
-            c5.markdown("❌ Pending")
-            if c6.button("Confirm", key=f"conf_{p.id}"):
+
+            c5.markdown("⏳ Pending")
+
+            col_confirm, col_ban = c6.columns(2)
+
+            if col_confirm.button("Confirm", key=f"conf_payout_{p.id}"):
                 p.received = 1
                 session.commit()
                 st.rerun()
 
-        # Delete debajo pero alineado
-        c_del = st.columns([2,2,1,2,1,1])[5]
+            if col_ban.button("Ban", key=f"ban_payout_{p.id}"):
+                p.received = 2
+                session.commit()
+                st.rerun()
+
+        # Delete alineado debajo
+        c_del = st.columns([2,2,1,2,1,2])[5]
+
         if c_del.button("🗑", key=f"del_global_{p.id}"):
             session.delete(p)
             session.commit()
             st.rerun()
 
         st.markdown("---")
-        
+# ============================================================
+# ======================== TAB 3 =============================
+# ============================================================
+with tab3:
+
+    st.subheader("📅 Monthly Earnings Overview")
+
+    payouts = session.query(Payout).all()
+
+    monthly_data = {}
+
+    for p in payouts:
+
+        # ignorar pending
+        if p.received == 0:
+            continue
+
+        try:
+            value = float(p.amount)
+        except:
+            value = 0
+
+        try:
+            date_obj = datetime.strptime(p.datetime, "%d-%m-%Y %H:%M")
+            month_key = date_obj.strftime("%Y-%m")
+        except:
+            continue
+
+        if month_key not in monthly_data:
+            monthly_data[month_key] = {
+                "earned": 0,
+                "lost": 0,
+                "paid_accounts": 0,
+                "banned_accounts": 0
+            }
+
+        if p.received == 1:
+            monthly_data[month_key]["earned"] += value
+            monthly_data[month_key]["paid_accounts"] += 1
+
+        elif p.received == 2:
+            monthly_data[month_key]["lost"] += value
+            monthly_data[month_key]["banned_accounts"] += 1
+
+    if not monthly_data:
+        st.info("No payout data yet.")
+    else:
+
+        for month in sorted(monthly_data.keys(), reverse=True):
+
+            earned = monthly_data[month]["earned"]
+            lost = monthly_data[month]["lost"]
+            paid_acc = monthly_data[month]["paid_accounts"]
+            banned_acc = monthly_data[month]["banned_accounts"]
+
+            net = earned - lost
+
+            st.markdown(f"## 📅 {month}")
+
+            col1, col2, col3 = st.columns(3)
+
+            col1.metric("💰 Earned", f"${earned:.2f}")
+            col2.metric("🚫 Lost", f"${lost:.2f}")
+            col3.metric("💵 Net", f"${net:.2f}")
+
+            col4, col5 = st.columns(2)
+
+            col4.metric("👤 Accounts Paid", paid_acc)
+            col5.metric("🚫 Accounts Banned", banned_acc)
+
+            st.markdown("---")
+            
 session.close()
